@@ -2,7 +2,7 @@
 import React, { useState, useCallback, ChangeEvent, useRef, useEffect } from 'react';
 import { transcribeAudio } from './services/geminiService';
 import { TimestampMode, TimestampFormat, Punctuation, TranscriptionSettings, TranscriptionCue, TranscriptionItem, ProcessingStatus } from './types';
-import { UploadIcon, FileAudioIcon, CopyIcon, CheckIcon, DownloadIcon, VideoCameraIcon, PlayIcon, PauseIcon, TrashIcon, ListIcon } from './components/icons';
+import { UploadIcon, FileAudioIcon, CopyIcon, CheckIcon, DownloadIcon, VideoCameraIcon, PlayIcon, PauseIcon, TrashIcon, ListIcon, CloudIcon } from './components/icons';
 
 
 // Make WaveSurfer available from the global scope (loaded via CDN)
@@ -468,19 +468,26 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 font-sans p-4 sm:p-6 lg:p-8">
-      <div className="max-w-7xl mx-auto">
-        <header className="text-center mb-8">
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-teal-500">
-            Audio Transcription Assistant
-          </h1>
+      <div className="max-w-[1600px] mx-auto">
+        <header className="flex flex-col items-center justify-center mb-10 gap-6">
+            <div className="relative">
+                <div className="absolute -inset-4 bg-cyan-500/10 blur-xl rounded-full opacity-50"></div>
+                <img 
+                    src="logo.png" 
+                    alt="TechWolf" 
+                    className="relative h-28 sm:h-32 w-auto object-contain drop-shadow-[0_0_15px_rgba(6,182,212,0.5)]"
+                />
+            </div>
+            <h1 className="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-400 tracking-tight">
+                Audio Transcription Assistant
+            </h1>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* LEFT COLUMN: Input, Settings, Queue (4 cols) */}
-          <section className="lg:col-span-4 space-y-6">
-            <FileUpload onFilesAdded={handleFilesAdded} />
-            
-             <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg">
+        <main className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          
+          {/* COLUMN 1: Settings (3 cols) */}
+          <aside className="lg:col-span-3 space-y-6">
+             <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg h-full">
                 <h2 className="text-xl font-bold mb-4 text-white border-b border-slate-700 pb-2">Settings</h2>
                 <div className="space-y-6">
                   <RadioGroup
@@ -511,15 +518,29 @@ const App: React.FC = () => {
                   />
                 </div>
              </div>
+          </aside>
 
-            <div className="bg-slate-800/50 rounded-xl border border-slate-700 shadow-lg overflow-hidden flex flex-col max-h-[500px]">
+          {/* COLUMN 2: Upload & Queue (4 cols) */}
+          <section className="lg:col-span-4 space-y-6">
+            <FileUpload onFilesAdded={handleFilesAdded} />
+            
+            <div className="bg-slate-800/50 rounded-xl border border-slate-700 shadow-lg overflow-hidden flex flex-col min-h-[400px] max-h-[600px]">
                 <div className="p-4 border-b border-slate-700 bg-slate-800 flex justify-between items-center">
                     <div className="flex items-center gap-2">
                         <ListIcon className="w-5 h-5 text-cyan-400" />
                         <h3 className="font-semibold text-white">File Queue</h3>
                         <span className="text-xs bg-slate-700 px-2 py-0.5 rounded-full text-slate-300">{items.length}</span>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 items-center">
+                        <a 
+                            href="https://drive.google.com/drive/folders/1PecvCkzNQpEcW5O6zCM9_hS1UtHWedB4?usp=sharing"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs bg-slate-700 hover:bg-slate-600 text-cyan-400 border border-slate-600 px-2 py-1.5 rounded-md transition-colors flex items-center gap-1"
+                            title="Open Google Drive Folder"
+                        >
+                            <CloudIcon className="w-4 h-4" />
+                        </a>
                         {items.length > 0 && (
                             <button
                                 onClick={clearAllFiles}
@@ -542,7 +563,7 @@ const App: React.FC = () => {
                     </div>
                 </div>
                 
-                <div className="overflow-y-auto p-2 space-y-2 flex-grow">
+                <div className="overflow-y-auto p-2 space-y-2 flex-grow custom-scrollbar">
                     {items.length === 0 ? (
                         <div className="text-center py-8 text-slate-500 italic text-sm">
                             No files added yet.
@@ -592,8 +613,8 @@ const App: React.FC = () => {
             </div>
           </section>
 
-          {/* RIGHT COLUMN: Output (8 cols) */}
-          <section className="lg:col-span-8 space-y-6">
+          {/* COLUMN 3: Output (5 cols) */}
+          <section className="lg:col-span-5 space-y-6">
             {!activeItem ? (
                 <div className="bg-slate-800/30 border border-slate-800 rounded-xl h-full flex flex-col justify-center items-center p-8 text-slate-500 min-h-[600px]">
                     <ListIcon className="w-16 h-16 opacity-20 mb-4" />
@@ -640,7 +661,7 @@ const App: React.FC = () => {
                  </div>
 
                 {/* Output Area */}
-                 <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg min-h-[600px] flex flex-col relative">
+                 <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg min-h-[500px] flex flex-col relative">
                     <div className="flex justify-between items-center mb-4 border-b border-slate-700 pb-3">
                         <h2 className="text-xl font-bold text-white">Transcript</h2>
                         <div className="flex items-center gap-2">
@@ -663,7 +684,7 @@ const App: React.FC = () => {
                         </div>
                     </div>
                     
-                    <div ref={outputRef} className="flex-grow overflow-auto h-full max-h-[800px] pr-2 custom-scrollbar">
+                    <div ref={outputRef} className="flex-grow overflow-auto h-full max-h-[700px] pr-2 custom-scrollbar">
                         {activeItem.status === 'transcribing' && (
                              <div className="flex flex-col justify-center items-center h-full gap-4 min-h-[300px]">
                                 <div className="flex items-center gap-1">

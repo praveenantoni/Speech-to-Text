@@ -1,0 +1,6 @@
+{
+  "name": "Audio Transcription Assistant",
+  "description": "An intelligent web application that transcribes audio files into text with customizable formatting options for timestamps and punctuation, powered by the Gemini API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

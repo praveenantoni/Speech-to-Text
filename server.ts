@@ -28,14 +28,17 @@ const parseCuesFromBuffer = (buffer: string): { cues: TranscriptionCue[], remain
           const jsonStr = match[0];
           const obj = JSON.parse(jsonStr);
           
-          const start = typeof obj.s === 'number' ? obj.s : obj.start;
-          const end = typeof obj.e === 'number' ? obj.e : obj.end;
+          const rawStart = obj.s !== undefined ? obj.s : obj.start;
+          const rawEnd = obj.e !== undefined ? obj.e : obj.end;
           const word = obj.w || obj.text || obj.word;
 
-          if (typeof start === 'number' && typeof end === 'number' && word && String(word).trim().length > 0) {
+          const startSec = typeof rawStart === 'number' ? rawStart : parseFloat(String(rawStart));
+          const endSec = typeof rawEnd === 'number' ? rawEnd : parseFloat(String(rawEnd));
+
+          if (!isNaN(startSec) && isFinite(startSec) && !isNaN(endSec) && isFinite(endSec) && word && String(word).trim().length > 0) {
               cues.push({
-                  start: Math.round(start * 1000), // Seconds to ms
-                  end: Math.round(end * 1000),     // Seconds to ms
+                  start: Math.round(startSec * 1000), // Seconds to ms
+                  end: Math.round(endSec * 1000),     // Seconds to ms
                   word: String(word).trim()
               });
               lastIndex = match.index + match[0].length;
@@ -53,88 +56,17 @@ const parseCuesFromBuffer = (buffer: string): { cues: TranscriptionCue[], remain
 
 const normalizeCues = (cues: TranscriptionCue[]): TranscriptionCue[] => {
     if (cues.length === 0) return [];
-
-    let usesMMSS = false;
-    let lastMs = 0;
-
-    for (const cue of cues) {
-        if (cue.start < lastMs) {
-            const mmss = cue.start / 1000;
-            const min = Math.floor(mmss);
-            const sec = Math.round((mmss - min) * 100);
-            const convertedMs = (min * 60 + sec) * 1000;
-            if (convertedMs >= lastMs) {
-                usesMMSS = true;
-                break;
-            }
-        }
-        lastMs = cue.start;
-    }
-
-    if (!usesMMSS) {
-        for (const cue of cues) {
-            if (cue.end < cue.start) {
-                const startMmss = cue.start / 1000;
-                const startMin = Math.floor(startMmss);
-                const startSec = Math.round((startMmss - startMin) * 100);
-                const startConverted = (startMin * 60 + startSec) * 1000;
-
-                const endMmss = cue.end / 1000;
-                const endMin = Math.floor(endMmss);
-                const endSec = Math.round((endMmss - endMin) * 100);
-                const endConverted = (endMin * 60 + endSec) * 1000;
-
-                if (endConverted >= startConverted) {
-                    usesMMSS = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (usesMMSS) {
-        let inMMSS = false;
-        let prevMs = 0;
-
-        return cues.map(cue => {
-            let start = cue.start;
-            let end = cue.end;
-
-            if (!inMMSS) {
-                if (cue.start < prevMs || cue.end < cue.start) {
-                    inMMSS = true;
-                } else {
-                    const startMmss = cue.start / 1000;
-                    const startMin = Math.floor(startMmss);
-                    const startSec = Math.round((startMmss - startMin) * 100);
-                    const startConverted = (startMin * 60 + startSec) * 1000;
-                    if (startConverted < cue.start && startConverted >= prevMs && startMin > 0) {
-                        inMMSS = true;
-                    }
-                }
-            }
-
-            if (inMMSS) {
-                const convertMs = (ms: number): number => {
-                    const mmss = ms / 1000;
-                    const min = Math.floor(mmss);
-                    const sec = Math.round((mmss - min) * 100);
-                    return (min * 60 + sec) * 1000;
-                };
-                start = convertMs(cue.start);
-                end = convertMs(cue.end);
-            }
-
-            prevMs = start;
-            return {
-                ...cue,
-                start,
-                end
-            };
-        });
-    }
-
-    return cues;
+    
+    // Just ensure chronological ordering and non-negative durations
+    return cues.map(cue => {
+        let start = Math.max(0, cue.start);
+        let end = Math.max(start, cue.end);
+        return {
+            ...cue,
+            start,
+            end
+        };
+    });
 };
 
 // API Endpoints
@@ -181,16 +113,48 @@ app.post("/api/transcribe", upload.single("file"), async (req, res) => {
       },
     };
 
-    const systemInstruction = `You are a precision audio transcription engine.
+    const systemInstruction = `You are a professional, ultra-precise audio transcription and temporal alignment engine. Your task is to transcribe the provided audio and align each ${isWordMode ? "individual word" : "sentence"} with its exact start and end times in the audio stream.
+
+    CRITICAL RULES FOR HIGH-PRECISION ALIGNMENT:
+    1. **Exact Boundary Detection**:
+       - 's' (start time) MUST represent the exact second (as a fractional number, e.g., 12.34) when the first phoneme/sound of the vocal utterance begins.
+       - 'e' (end time) MUST represent the exact second (as a fractional number, e.g., 13.15) when the final phoneme/sound of the vocal utterance fades out completely.
+       - NEVER round timestamps to the nearest integer or half-second (do not output simple '.0' or '.5' unless it's perfectly accurate).
+       - NEVER start a timestamp early (during the preceding silence, breath, or background noise). 
+       - NEVER extend a timestamp late into the succeeding silence.
+
+    2. **Avoid Timestamp Drift and Overlaps**:
+       - Ensure consecutive entries are strictly chronological. The start time 's' of an entry must be >= the end time 'e' of the previous entry (unless the speaker is overlapping another speaker).
+       - Keep silent pauses as empty space between the 'e' of the previous word/sentence and the 's' of the next one. Do not stretch words to cover silence.
+
+    3. **Time Calculation Formula**:
+       - Timestamps must be total seconds from the absolute beginning of the audio file.
+       - Convert any minutes/hours to total seconds. For example, 1 minute 5.25 seconds is 65.25. 2 minutes 10.4 seconds is 130.4.
+
+    4. **Granularity & Content**:
+       - Content 'w': Transcribe exactly what is spoken.
+       - ${isWordMode ? "Granularity: Exactly ONE object per individual word." : "Granularity: Group words together into complete, natural sentences."}
+       - ${settings.punctuation === 'on' ? "Punctuation: Keep standard punctuation (commas, periods, question marks) inside 'w'." : "Punctuation: Strip all punctuation from 'w'."}
+       - No empty objects, no ghost words, and no silent background sound descriptions (like [laughter] or [silence]).
+
+    FEW-SHOT EXAMPLES FOR TRAINING:
+    ${isWordMode ? `
+    // Wordstamp Mode Example:
+    [
+      { "s": 0.12, "e": 0.55, "w": "Chapter" },
+      { "s": 0.58, "e": 0.92, "w": "one" },
+      { "s": 2.04, "e": 2.45, "w": "Slurp" },
+      { "s": 2.48, "e": 2.91, "w": "slurp" }
+    ]
+    ` : `
+    // Sentencestamp Mode Example:
+    [
+      { "s": 0.12, "e": 0.92, "w": "Chapter one." },
+      { "s": 2.04, "e": 2.91, "w": "Slurp, slurp." }
+    ]
+    `}
     
-    RULES:
-    1. **Timestamps**: Return 's' (start) and 'e' (end) as NUMBERS representing the TOTAL seconds from the very start (e.g., 65.5 for 1 minute and 5.5 seconds). CRITICAL: Do NOT write 1 minute and 5 seconds as 1.05. You MUST compute total seconds as (minutes * 60) + seconds. For example, 1 minute 30 seconds is 90.0, and 2 minutes 15 seconds is 135.0.
-    2. **Content**: Transcribe exactly what is spoken into 'w' (content).
-    3. **No Ghosts**: Do NOT output objects with empty 'w' text.
-    4. **Granularity**: ${isWordMode ? "One object per single word." : "Group by complete sentences."}
-    5. **Punctuation**: ${settings.punctuation === 'on' ? 'Include punctuation in "w".' : 'No punctuation.'}
-    
-    Output a JSON Array of objects: [{ "s": 0.5, "e": 0.9, "w": "Hello" }, ...]`;
+    Begin transcription. Output ONLY the raw JSON Array complying exactly with the schema.`;
 
     const userPrompt = `Transcribe audio.`;
     const mimeType = file.mimetype || (file.originalname.endsWith('.mp4') ? 'video/mp4' : 'audio/mp3');

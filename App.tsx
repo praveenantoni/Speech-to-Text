@@ -202,101 +202,48 @@ const parseTimestamp = (timestamp: string | number): number => {
 
 const normalizeCues = (cues: TranscriptionCue[]): TranscriptionCue[] => {
     if (cues.length === 0) return [];
-
-    let usesMMSS = false;
-    let lastMs = 0;
-
-    for (const cue of cues) {
-        if (cue.start < lastMs) {
-            const mmss = cue.start / 1000;
-            const min = Math.floor(mmss);
-            const sec = Math.round((mmss - min) * 100);
-            const convertedMs = (min * 60 + sec) * 1000;
-            if (convertedMs >= lastMs) {
-                usesMMSS = true;
-                break;
-            }
-        }
-        lastMs = cue.start;
-    }
-
-    if (!usesMMSS) {
-        for (const cue of cues) {
-            if (cue.end < cue.start) {
-                const startMmss = cue.start / 1000;
-                const startMin = Math.floor(startMmss);
-                const startSec = Math.round((startMmss - startMin) * 100);
-                const startConverted = (startMin * 60 + startSec) * 1000;
-
-                const endMmss = cue.end / 1000;
-                const endMin = Math.floor(endMmss);
-                const endSec = Math.round((endMmss - endMin) * 100);
-                const endConverted = (endMin * 60 + endSec) * 1000;
-
-                if (endConverted >= startConverted) {
-                    usesMMSS = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (usesMMSS) {
-        let inMMSS = false;
-        let prevMs = 0;
-
-        return cues.map(cue => {
-            let start = cue.start;
-            let end = cue.end;
-
-            if (!inMMSS) {
-                if (cue.start < prevMs || cue.end < cue.start) {
-                    inMMSS = true;
-                } else {
-                    const startMmss = cue.start / 1000;
-                    const startMin = Math.floor(startMmss);
-                    const startSec = Math.round((startMmss - startMin) * 100);
-                    const startConverted = (startMin * 60 + startSec) * 1000;
-                    if (startConverted < cue.start && startConverted >= prevMs && startMin > 0) {
-                        inMMSS = true;
-                    }
-                }
-            }
-
-            if (inMMSS) {
-                const convertMs = (ms: number): number => {
-                    const mmss = ms / 1000;
-                    const min = Math.floor(mmss);
-                    const sec = Math.round((mmss - min) * 100);
-                    return (min * 60 + sec) * 1000;
-                };
-                start = convertMs(cue.start);
-                end = convertMs(cue.end);
-            }
-
-            prevMs = start;
-            return {
-                ...cue,
-                start,
-                end
-            };
-        });
-    }
-
-    return cues;
+    
+    // Just ensure chronological ordering and non-negative durations
+    return cues.map(cue => {
+        let start = Math.max(0, cue.start);
+        let end = Math.max(start, cue.end);
+        return {
+            ...cue,
+            start,
+            end
+        };
+    });
 };
 
 const parseTranscription = (rawText: string): TranscriptionCue[] => {
     if (!rawText) return [];
 
     try {
-        const json = JSON.parse(rawText);
+        let cleanedText = rawText.trim();
+        // Strip markdown codeblock wrapper if present
+        if (cleanedText.startsWith('```')) {
+            const firstNewLine = cleanedText.indexOf('\n');
+            if (firstNewLine !== -1) {
+                cleanedText = cleanedText.substring(firstNewLine + 1);
+            } else {
+                cleanedText = cleanedText.replace(/^```[a-zA-Z]*/, '');
+            }
+        }
+        if (cleanedText.endsWith('```')) {
+            cleanedText = cleanedText.substring(0, cleanedText.length - 3).trim();
+        }
+        cleanedText = cleanedText.trim();
+
+        const json = JSON.parse(cleanedText);
         if (Array.isArray(json)) {
             const parsed = json.map((item: any) => {
                  // Support both optimized (s,e,w) and verbose (start,end,text) keys
-                 const start = typeof item.s === 'number' ? item.s : (typeof item.start === 'number' ? item.start : parseTimestamp(item.start));
-                 const end = typeof item.e === 'number' ? item.e : (typeof item.end === 'number' ? item.end : parseTimestamp(item.end));
+                 const rawStart = item.s !== undefined ? item.s : item.start;
+                 const rawEnd = item.e !== undefined ? item.e : item.end;
                  const word = item.w || item.text || item.word; 
+                 
+                 const start = parseTimestamp(rawStart);
+                 const end = parseTimestamp(rawEnd);
                  
                  // Strict filtering: discard invalid timestamps or empty words
                  if (typeof start !== 'number' || isNaN(start) || 
@@ -307,11 +254,11 @@ const parseTranscription = (rawText: string): TranscriptionCue[] => {
                  
                  return { 
                     word: String(word).trim(), 
-                    start: Math.round(start < 10000 ? start * 1000 : start), // auto-detect if seconds or ms
-                    end: Math.round(end < 10000 ? end * 1000 : end)
+                    start: Math.round(start),
+                    end: Math.round(end)
                  };
             }).filter((cue: any): cue is TranscriptionCue => cue !== null);
-            return normalizeCues(parsed);
+            return normalizeCues(parsed).sort((a, b) => a.start - b.start);
         }
     } catch (e) {
         // Fallback for non-JSON response
@@ -331,7 +278,7 @@ const parseTranscription = (rawText: string): TranscriptionCue[] => {
         return { word, start, end };
     }).filter((cue): cue is TranscriptionCue => cue !== null);
 
-    return normalizeCues(parsedCues);
+    return normalizeCues(parsedCues).sort((a, b) => a.start - b.start);
 };
 
 const formatTime = (totalMilliseconds: number, format: TimestampFormat, separator = '.'): string => {
@@ -363,6 +310,8 @@ const App: React.FC = () => {
     timestampMode: TimestampMode.WORDSTAMP,
     timestampFormat: TimestampFormat.HMS,
     punctuation: Punctuation.ON,
+    syncOffset: 0,
+    scrollBehavior: 'smooth',
   });
 
   // Multiple Files State
@@ -381,6 +330,13 @@ const App: React.FC = () => {
   const outputRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   
+  // Subtitle/Cue Editing State
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editWord, setEditWord] = useState<string>('');
+  const [editStart, setEditStart] = useState<string>('');
+  const [editEnd, setEditEnd] = useState<string>('');
+  const [editError, setEditError] = useState<string | null>(null);
+
   // Media refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const waveformContainerRef = useRef<HTMLDivElement>(null);
@@ -388,6 +344,160 @@ const App: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isWaveformReady, setIsWaveformReady] = useState(false);
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
+
+  // Editing and Subtitle Management Helpers
+  const startEditing = (index: number, cue: TranscriptionCue) => {
+      setEditingIndex(index);
+      setEditWord(cue.word);
+      setEditStart(formatTime(cue.start, settings.timestampFormat));
+      setEditEnd(formatTime(cue.end, settings.timestampFormat));
+      setEditError(null);
+  };
+
+  const deleteCue = (index: number) => {
+      if (!activeItem) return;
+      const updatedCues = activeItem.cues.filter((_, i) => i !== index);
+      updateItemStatus(activeItem.id, {
+          cues: updatedCues,
+          fullTranscript: updatedCues.map(c => c.word).join(' ')
+      });
+      if (editingIndex === index) {
+          setEditingIndex(null);
+      }
+  };
+
+  const mergeWithNext = (index: number) => {
+      if (!activeItem || index >= activeItem.cues.length - 1) return;
+      const currentCue = activeItem.cues[index];
+      const nextCue = activeItem.cues[index + 1];
+      
+      const mergedCue: TranscriptionCue = {
+          start: currentCue.start,
+          end: nextCue.end,
+          word: `${currentCue.word} ${nextCue.word}`.trim()
+      };
+      
+      const updatedCues = activeItem.cues.filter((_, i) => i !== index && i !== index + 1);
+      updatedCues.splice(index, 0, mergedCue);
+      
+      const normalized = normalizeCues(updatedCues).sort((a, b) => a.start - b.start);
+      updateItemStatus(activeItem.id, {
+          cues: normalized,
+          fullTranscript: normalized.map(c => c.word).join(' ')
+      });
+  };
+
+  const splitCue = (index: number) => {
+      if (!activeItem) return;
+      const cue = activeItem.cues[index];
+      const midTime = Math.round(cue.start + (cue.end - cue.start) / 2);
+      
+      const words = cue.word.split(/\s+/);
+      let cue1: TranscriptionCue;
+      let cue2: TranscriptionCue;
+
+      if (words.length <= 1) {
+          cue1 = { start: cue.start, end: midTime, word: cue.word };
+          cue2 = { start: midTime, end: cue.end, word: '...' };
+      } else {
+          const midWordIndex = Math.ceil(words.length / 2);
+          const word1 = words.slice(0, midWordIndex).join(' ');
+          const word2 = words.slice(midWordIndex).join(' ');
+          cue1 = { start: cue.start, end: midTime, word: word1 };
+          cue2 = { start: midTime, end: cue.end, word: word2 };
+      }
+      
+      const updatedCues = [...activeItem.cues];
+      updatedCues.splice(index, 1, cue1, cue2);
+      
+      const normalized = normalizeCues(updatedCues).sort((a, b) => a.start - b.start);
+      updateItemStatus(activeItem.id, {
+          cues: normalized,
+          fullTranscript: normalized.map(c => c.word).join(' ')
+      });
+  };
+
+  const insertCueAtCurrentTime = () => {
+      if (!activeItem) return;
+      const currentTimeMs = Math.round(playerCurrentTime * 1000);
+      
+      const newCue: TranscriptionCue = {
+          start: currentTimeMs,
+          end: currentTimeMs + 2000, // default 2 seconds
+          word: "New subtitle"
+      };
+      
+      const updatedCues = [...activeItem.cues, newCue];
+      const sorted = normalizeCues(updatedCues).sort((a, b) => a.start - b.start);
+      
+      updateItemStatus(activeItem.id, {
+          cues: sorted,
+          fullTranscript: sorted.map(c => c.word).join(' ')
+      });
+  };
+
+  const loadDemoData = () => {
+      const demoFile = new File([""], "space_royals_mission.mp3", { type: "audio/mp3" });
+      
+      const demoCues: TranscriptionCue[] = [
+          { start: 0, end: 1200, word: "Chapter 1." },
+          { start: 2000, end: 3000, word: "Slurp, slurp." },
+          { start: 4000, end: 5000, word: "Shwing." },
+          { start: 6000, end: 8500, word: "Your shape-shifting can't fool us." },
+          { start: 10000, end: 10800, word: "Yeah," },
+          { start: 10800, end: 13000, word: "go back to your own planet." },
+          { start: 15000, end: 16800, word: "Perennial blooms blast!" },
+          { start: 17500, end: 18500, word: "Fwoosh!" },
+          { start: 19000, end: 21600, word: "Hang on. I thought this was a stealth mission." },
+          { start: 22500, end: 26800, word: "Find the bad guys without giving away our secret identities?" },
+          { start: 28000, end: 29500, word: "Uh..." },
+          { start: 31000, end: 33900, word: "No, it's fine, because we're space royals." },
+          { start: 35500, end: 37000, word: "Our type of magic..." },
+          { start: 37500, end: 39800, word: "It's... like infrared." },
+          { start: 40500, end: 42500, word: "Human eyes can't see it." },
+          { start: 43500, end: 48500, word: "Okay, but you yelled out your attack and the shape-shifter disintegrated." },
+          { start: 49500, end: 50800, word: "You're telling me..." },
+          { start: 52500, end: 55800, word: "your illusionist cat put up a cloaking field." },
+          { start: 56500, end: 58900, word: "The name is Princess Silphanaria." },
+          { start: 60000, end: 61000, word: "Hm." },
+          { start: 62000, end: 63200, word: "But anyway," },
+          { start: 64500, end: 65600, word: "are you all right?" },
+          { start: 66000, end: 66800, word: "What?" },
+          { start: 68000, end: 70200, word: "You know, um, with moving." },
+          { start: 71500, end: 74500, word: "And not getting to say goodbye to Rebecca." },
+          { start: 75500, end: 76200, word: "Puff." },
+          { start: 77000, end: 77600, word: "Yeah." },
+          { start: 78000, end: 80800, word: "Why wouldn't I be? We do this all the time." }
+      ];
+
+      const demoItem: TranscriptionItem = {
+          id: "demo-space-royals",
+          file: demoFile,
+          mediaType: 'audio',
+          status: 'completed',
+          cues: demoCues,
+          fullTranscript: demoCues.map(c => c.word).join(' '),
+          timestamp: Date.now()
+      };
+
+      setItems([demoItem]);
+      setActiveId(demoItem.id);
+  };
+
+  const handleCueClick = (startMs: number) => {
+      const seconds = startMs / 1000;
+      if (activeItem?.mediaType === 'video' && videoRef.current) {
+          videoRef.current.currentTime = seconds;
+          if (!isPlaying) {
+              videoRef.current.play().catch(() => {});
+          }
+      } else if (wavesurferRef.current) {
+          wavesurferRef.current.setTime(seconds);
+          if (!isPlaying) {
+              wavesurferRef.current.play().catch(() => {});
+          }
+      }
+  };
 
   // Refs for stability
   const cuesRef = useRef<TranscriptionCue[]>([]);
@@ -449,8 +559,17 @@ const App: React.FC = () => {
       setActiveId(null);
   };
 
-  const updateItemStatus = (id: string, updates: Partial<TranscriptionItem>) => {
-      setItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  const updateItemStatus = (
+    id: string,
+    updates: Partial<TranscriptionItem> | ((prev: TranscriptionItem) => Partial<TranscriptionItem>)
+  ) => {
+      setItems(prev => prev.map(item => {
+          if (item.id === id) {
+              const u = typeof updates === 'function' ? updates(item) : updates;
+              return { ...item, ...u };
+          }
+          return item;
+      }));
   };
 
   const processFile = async (item: TranscriptionItem) => {
@@ -478,17 +597,17 @@ const App: React.FC = () => {
           const result = await transcribeAudio(settings, item.file, null, onProgress);
           const parsedCues = parseTranscription(result);
           
-          let fullText = '';
-          if (parsedCues.length === 0 && result.length > 0) {
-             fullText = result;
-          } else {
-             fullText = parsedCues.map(c => c.word).join(' ');
-          }
-
-          updateItemStatus(item.id, { 
-              status: 'completed', 
-              cues: parsedCues.length > 0 ? parsedCues : item.cues, 
-              fullTranscript: fullText 
+          updateItemStatus(item.id, (prevItem) => {
+              const finalCues = parsedCues.length > 0 ? parsedCues : prevItem.cues;
+              const finalTranscript = finalCues.length > 0 
+                  ? finalCues.map(c => c.word).join(' ') 
+                  : (result || prevItem.fullTranscript);
+              
+              return {
+                  status: 'completed',
+                  cues: finalCues,
+                  fullTranscript: finalTranscript
+              };
           });
 
       } catch (err) {
@@ -520,21 +639,52 @@ const App: React.FC = () => {
     const currentCues = cuesRef.current;
     if (currentCues.length === 0) return;
     
-    const currentTimeMs = currentTime * 1000;
-    const currentCueIndex = currentCues.findIndex(cue => currentTimeMs >= cue.start && currentTimeMs <= cue.end);
+    const offsetMs = settings.syncOffset ?? 0;
+    const currentTimeMs = (currentTime * 1000) + offsetMs;
+    
+    // 1. Try direct match
+    let currentCueIndex = currentCues.findIndex(cue => currentTimeMs >= cue.start && currentTimeMs <= cue.end);
+
+    // 2. If in a gap between words/sentences, find the closest previous cue
+    // so the highlight doesn't jump away or flicker during minor silences
+    if (currentCueIndex === -1) {
+        let bestIndex = -1;
+        let minDiff = Infinity;
+        for (let i = 0; i < currentCues.length; i++) {
+            const cue = currentCues[i];
+            if (currentTimeMs >= cue.end) {
+                const diff = currentTimeMs - cue.end;
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    bestIndex = i;
+                }
+            }
+        }
+        // Retain highlight of the previous word for up to 1.5 seconds during a pause
+        if (bestIndex !== -1 && minDiff < 1500) {
+            currentCueIndex = bestIndex;
+        }
+    }
 
     setActiveCueIndex(prev => {
         if (prev !== currentCueIndex) return currentCueIndex;
         return prev;
     });
-  }, []);
+  }, [settings.syncOffset]);
+
+  // Keep a stable ref to handleTimeUpdate so outside event listeners (like WaveSurfer)
+  // don't run into closure issues or require full WaveSurfer reconstructions when offset changes.
+  const handleTimeUpdateRef = useRef(handleTimeUpdate);
+  useEffect(() => {
+    handleTimeUpdateRef.current = handleTimeUpdate;
+  }, [handleTimeUpdate]);
 
   useEffect(() => {
     if (activeCueIndex > -1) {
         const activeElement = outputRef.current?.querySelector(`[data-cue-index='${activeCueIndex}']`);
-        activeElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        activeElement?.scrollIntoView({ behavior: settings.scrollBehavior ?? 'smooth', block: 'center' });
     }
-  }, [activeCueIndex]);
+  }, [activeCueIndex, settings.scrollBehavior]);
 
   // WaveSurfer Setup
   useEffect(() => {
@@ -569,7 +719,7 @@ const App: React.FC = () => {
     });
     
     ws.on('timeupdate', (currentTime: number) => {
-        handleTimeUpdate(currentTime);
+        handleTimeUpdateRef.current(currentTime);
         setPlayerCurrentTime(currentTime);
     });
     
@@ -615,6 +765,27 @@ const App: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  const downloadTXT = () => {
+    if (!activeItem || activeItem.cues.length === 0) return;
+    
+    let txtContent = '';
+    activeItem.cues.forEach((cue) => {
+        const start = formatTime(cue.start, settings.timestampFormat);
+        const end = formatTime(cue.end, settings.timestampFormat);
+        txtContent += `[${start} --> ${end}]  ${cue.word}\n`;
+    });
+    
+    const blob = new Blob([txtContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeItem.file.name.split('.').slice(0, -1).join('.')}_transcript.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const formatPlayerTime = (seconds: number) => {
     if (isNaN(seconds) || seconds < 0) return '00:00:00';
     return new Date(seconds * 1000).toISOString().slice(11, 19);
@@ -637,7 +808,7 @@ const App: React.FC = () => {
           {/* TOP ROW: Settings, Upload, File Queue (3 columns on md/lg) */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
               {/* 1. Settings Card */}
-              <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg flex flex-col justify-between md:h-[320px]">
+              <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg flex flex-col justify-between md:min-h-[320px]">
                  <div>
                    <h2 className="text-sm font-semibold text-slate-300 mb-3 uppercase tracking-wider">Settings</h2>
                    <div className="border-t border-slate-700/60 pt-4 space-y-4">
@@ -661,13 +832,50 @@ const App: React.FC = () => {
                        ]}
                        disabled={isProcessingQueue}
                      />
-                     <div className="pt-2">
+                     
+                     <div className="grid grid-cols-2 gap-4 items-center border-t border-slate-700/40 pt-3">
                        <ToggleSwitch
                          label="Punctuation"
                          enabled={settings.punctuation === Punctuation.ON}
                          onChange={(enabled) => handleSettingsChange('punctuation', enabled ? Punctuation.ON : Punctuation.OFF)}
                          disabled={isProcessingQueue}
                        />
+                       <RadioGroup
+                         label="Auto-Scroll"
+                         value={settings.scrollBehavior ?? 'smooth'}
+                         onChange={(value) => handleSettingsChange('scrollBehavior', value)}
+                         options={[
+                           { value: 'smooth', label: 'Smooth' },
+                           { value: 'auto', label: 'Instant' },
+                         ]}
+                       />
+                     </div>
+
+                     <div className="pt-1 border-t border-slate-700/40 pt-3">
+                       <div className="flex justify-between items-center mb-1">
+                         <label className="text-xs font-medium text-slate-400">Sync Calibration</label>
+                         <span className="text-[11px] font-mono font-semibold text-cyan-400">
+                           {settings.syncOffset === 0 
+                             ? '0 ms (Synced)' 
+                             : settings.syncOffset && settings.syncOffset > 0 
+                               ? `+${settings.syncOffset} ms (Advance)` 
+                               : `${settings.syncOffset} ms (Delay)`}
+                         </span>
+                       </div>
+                       <input 
+                         type="range" 
+                         min="-1000" 
+                         max="1000" 
+                         step="50" 
+                         value={settings.syncOffset ?? 0}
+                         onChange={(e) => handleSettingsChange('syncOffset', parseInt(e.target.value, 10))}
+                         className="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-cyan-500 hover:accent-cyan-400 transition-all"
+                       />
+                       <div className="flex justify-between text-[9px] text-slate-500 font-mono mt-0.5">
+                         <span>-1000ms (Delay)</span>
+                         <span>0ms</span>
+                         <span>+1000ms (Advance)</span>
+                       </div>
                      </div>
                    </div>
                  </div>
@@ -720,8 +928,16 @@ const App: React.FC = () => {
 
                   <div className="overflow-y-auto space-y-2 flex-grow custom-scrollbar pr-1">
                       {items.length === 0 ? (
-                          <div className="text-center py-12 text-slate-500 italic text-xs">
-                              No files added yet. Upload files to get started.
+                          <div className="text-center py-8 text-slate-500 italic text-xs space-y-4">
+                              <p>No files added yet. Upload files to get started.</p>
+                              <div className="pt-2">
+                                  <button
+                                      onClick={loadDemoData}
+                                      className="px-4 py-2 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-400 border border-cyan-800 rounded-lg transition-all font-semibold shadow-md active:scale-95 text-xs inline-flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                      <span>Load Space Royals Sample</span>
+                                  </button>
+                              </div>
                           </div>
                       ) : (
                           items.map(item => (
@@ -789,7 +1005,11 @@ const App: React.FC = () => {
                              <video
                                  ref={videoRef}
                                  src={activeMediaUrl || ''}
-                                 onTimeUpdate={(e) => handleTimeUpdate(e.currentTarget.currentTime)}
+                                 onTimeUpdate={(e) => {
+                                     const currentTime = e.currentTarget.currentTime;
+                                     handleTimeUpdate(currentTime);
+                                     setPlayerCurrentTime(currentTime);
+                                 }}
                                  onPlay={() => setIsPlaying(true)}
                                  onPause={() => setIsPlaying(false)}
                                  onLoadedMetadata={(e) => setActiveDuration(e.currentTarget.duration)}
@@ -830,20 +1050,40 @@ const App: React.FC = () => {
               ) : (
                   <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 shadow-lg h-[500px] flex flex-col relative">
                       <div className="flex justify-between items-center mb-4 border-b border-slate-700 pb-3">
-                          <h2 className="text-xl font-bold text-white">Transcript</h2>
+                          <div className="flex items-center gap-3">
+                              <h2 className="text-xl font-bold text-white">Transcript</h2>
+                              <button
+                                  onClick={insertCueAtCurrentTime}
+                                  disabled={activeItem.cues.length === 0}
+                                  className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-cyan-950/40 border border-cyan-800 hover:bg-cyan-900/60 text-cyan-400 hover:text-cyan-300 rounded-lg transition-all disabled:opacity-30 shadow-sm cursor-pointer"
+                                  title="Insert a new subtitle cue at the current playback position"
+                              >
+                                  <span>+ Cue</span>
+                              </button>
+                          </div>
                           <div className="flex items-center gap-2">
                               <button
                                   onClick={downloadVTT}
                                   disabled={activeItem.status !== 'completed'}
-                                  className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors disabled:opacity-30"
-                                  title="Download .vtt"
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-800 border border-slate-700 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 rounded-lg transition-all disabled:opacity-30 shadow-sm cursor-pointer"
+                                  title="Download standard .vtt subtitle file"
                               >
-                                 <DownloadIcon className="h-5 w-5" />
+                                 <DownloadIcon className="h-3.5 w-3.5" />
+                                 <span>VTT</span>
+                              </button>
+                              <button
+                                  onClick={downloadTXT}
+                                  disabled={activeItem.status !== 'completed'}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-800 border border-slate-700 hover:bg-slate-700 text-cyan-400 hover:text-cyan-300 rounded-lg transition-all disabled:opacity-30 shadow-sm cursor-pointer"
+                                  title="Download formatted text transcript (.txt) with selected timestamp format"
+                              >
+                                 <DownloadIcon className="h-3.5 w-3.5" />
+                                 <span>TXT</span>
                               </button>
                               <button
                                   onClick={copyToClipboard}
                                   disabled={activeItem.status !== 'completed'}
-                                  className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors disabled:opacity-30"
+                                  className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors disabled:opacity-30 cursor-pointer"
                                   title="Copy Text"
                               >
                                   {copied ? <CheckIcon className="h-5 w-5 text-green-400" /> : <CopyIcon className="h-5 w-5" />}
@@ -882,12 +1122,170 @@ const App: React.FC = () => {
                                   )}
                                   {activeItem.cues.length > 0 && (
                                        <div className="space-y-2 font-mono text-base">
-                                           {activeItem.cues.map((cue, index) => (
-                                              <div key={index} data-cue-index={index} className={`flex gap-4 p-3 rounded-lg transition-all duration-200 border border-transparent ${index === activeCueIndex ? 'bg-cyan-950/40 border-cyan-500/30' : 'hover:bg-slate-800/50'}`}>
-                                                  <span className="text-cyan-400 text-xs opacity-70 select-none flex-shrink-0 pt-1 w-20 text-right">{formatTime(cue.start, settings.timestampFormat)}</span>
-                                                  <span className="font-sans text-slate-200 text-lg leading-snug">{cue.word}</span>
-                                              </div>
-                                           ))}
+                                           {activeItem.cues.map((cue, index) => {
+                                              const isEditing = editingIndex === index;
+                                              const isActive = index === activeCueIndex;
+                                              
+                                              if (isEditing) {
+                                                  return (
+                                                      <div key={index} className="p-3 bg-slate-800 border border-cyan-500 rounded-lg shadow-md space-y-3 text-left">
+                                                          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                                                              <div className="flex items-center gap-2">
+                                                                  <span className="text-xs font-semibold text-slate-400 uppercase">Start:</span>
+                                                                  <input 
+                                                                      type="text" 
+                                                                      value={editStart} 
+                                                                      onChange={(e) => {
+                                                                          setEditStart(e.target.value);
+                                                                          setEditError(null);
+                                                                      }} 
+                                                                      className="bg-slate-900 border border-slate-700 text-cyan-400 rounded px-2.5 py-1 text-xs w-28 focus:outline-none focus:border-cyan-500 font-mono"
+                                                                  />
+                                                              </div>
+                                                              <div className="flex items-center gap-2">
+                                                                  <span className="text-xs font-semibold text-slate-400 uppercase">End:</span>
+                                                                  <input 
+                                                                      type="text" 
+                                                                      value={editEnd} 
+                                                                      onChange={(e) => {
+                                                                          setEditEnd(e.target.value);
+                                                                          setEditError(null);
+                                                                      }} 
+                                                                      className="bg-slate-900 border border-slate-700 text-cyan-400 rounded px-2.5 py-1 text-xs w-28 focus:outline-none focus:border-cyan-500 font-mono"
+                                                                  />
+                                                              </div>
+                                                              {editError && (
+                                                                  <span className="text-xs text-red-400 font-sans font-medium">{editError}</span>
+                                                              )}
+                                                          </div>
+                                                          <div className="flex items-end gap-3">
+                                                              <textarea
+                                                                  value={editWord}
+                                                                  onChange={(e) => setEditWord(e.target.value)}
+                                                                  className="flex-grow bg-slate-900 border border-slate-700 text-slate-100 rounded-lg p-2.5 focus:outline-none focus:border-cyan-500 text-sm font-sans leading-relaxed resize-none h-16"
+                                                              />
+                                                              <div className="flex gap-2 flex-shrink-0">
+                                                                  <button 
+                                                                      onClick={() => {
+                                                                          const parsedStart = parseTimestamp(editStart);
+                                                                          const parsedEnd = parseTimestamp(editEnd);
+                                                                          if (isNaN(parsedStart) || isNaN(parsedEnd)) {
+                                                                              setEditError("Invalid format.");
+                                                                              return;
+                                                                          }
+                                                                          if (parsedStart > parsedEnd) {
+                                                                              setEditError("Start time must be before End time.");
+                                                                              return;
+                                                                          }
+                                                                          
+                                                                          const updatedCues = [...activeItem.cues];
+                                                                          updatedCues[index] = {
+                                                                              start: parsedStart,
+                                                                              end: parsedEnd,
+                                                                              word: editWord.trim()
+                                                                          };
+                                                                          const sorted = normalizeCues(updatedCues).sort((a, b) => a.start - b.start);
+                                                                          updateItemStatus(activeItem.id, {
+                                                                              cues: sorted,
+                                                                              fullTranscript: sorted.map(c => c.word).join(' ')
+                                                                          });
+                                                                          setEditingIndex(null);
+                                                                      }}
+                                                                      className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                                                                  >
+                                                                      Save
+                                                                  </button>
+                                                                  <button 
+                                                                      onClick={() => setEditingIndex(null)}
+                                                                      className="bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer"
+                                                                  >
+                                                                      Cancel
+                                                                  </button>
+                                                              </div>
+                                                          </div>
+                                                      </div>
+                                                  );
+                                              }
+                                              
+                                              return (
+                                                  <div 
+                                                      key={index} 
+                                                      data-cue-index={index} 
+                                                      onClick={() => handleCueClick(cue.start)}
+                                                      className={`group flex items-start justify-between gap-4 p-3 rounded-lg transition-all duration-200 border border-transparent cursor-pointer relative ${
+                                                          isActive 
+                                                          ? 'bg-cyan-950/40 border-cyan-500/30' 
+                                                          : 'hover:bg-slate-800/50'
+                                                      }`}
+                                                  >
+                                                      <div className="flex gap-4 items-start flex-grow min-w-0 text-left">
+                                                          <div className="text-right flex-shrink-0 pt-1 w-24">
+                                                              <div className="text-cyan-400 text-xs font-mono font-semibold">
+                                                                  {formatTime(cue.start, settings.timestampFormat)}
+                                                              </div>
+                                                              <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                                                  to {formatTime(cue.end, settings.timestampFormat)}
+                                                              </div>
+                                                          </div>
+                                                          <span className="font-sans text-slate-200 text-sm leading-snug break-words pr-2 pt-0.5 flex-grow">
+                                                              {cue.word}
+                                                          </span>
+                                                      </div>
+                                                      
+                                                      {/* Cue Action buttons on hover */}
+                                                      <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1.5 bg-slate-800/95 py-1 px-1.5 rounded-md border border-slate-700/80 shadow-md transition-opacity duration-150 flex-shrink-0">
+                                                          <button 
+                                                              onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  startEditing(index, cue);
+                                                              }}
+                                                              className="p-1 hover:text-cyan-400 text-slate-400 rounded hover:bg-slate-700 transition-colors"
+                                                              title="Edit Subtitle"
+                                                          >
+                                                              <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                                  <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                              </svg>
+                                                          </button>
+                                                          <button 
+                                                              onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  splitCue(index);
+                                                              }}
+                                                              className="p-1 hover:text-cyan-400 text-slate-400 rounded hover:bg-slate-700 transition-colors"
+                                                              title="Split Subtitle"
+                                                          >
+                                                              <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.121 14.121L19 19m-7-7l7-7m-7 7l-2.879 2.879M12 12L9.121 9.121m0 5.758a3 3 0 10-4.243-4.243 3 3 0 004.243 4.243z" />
+                                                              </svg>
+                                                          </button>
+                                                          {index < activeItem.cues.length - 1 && (
+                                                              <button 
+                                                                  onClick={(e) => {
+                                                                      e.stopPropagation();
+                                                                      mergeWithNext(index);
+                                                                  }}
+                                                                  className="p-1 hover:text-cyan-400 text-slate-400 rounded hover:bg-slate-700 transition-colors"
+                                                                  title="Merge with Next"
+                                                              >
+                                                                  <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 13l-7 7-7-7m14-6l-7 7-7-7" />
+                                                                  </svg>
+                                                              </button>
+                                                          )}
+                                                          <button 
+                                                              onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  deleteCue(index);
+                                                              }}
+                                                              className="p-1 hover:text-red-400 text-slate-400 rounded hover:bg-slate-700 transition-colors"
+                                                              title="Delete Subtitle"
+                                                          >
+                                                              <TrashIcon className="w-3.5 h-3.5" />
+                                                          </button>
+                                                      </div>
+                                                  </div>
+                                              );
+                                           })}
                                        </div>
                                   )}
                               </div>
@@ -905,7 +1303,7 @@ const App: React.FC = () => {
                                   </div>
                                   <button 
                                       onClick={(e) => handleTranscribeSingle(e, activeItem)}
-                                      className="bg-cyan-600 hover:bg-cyan-500 text-white px-8 py-3 rounded-lg font-medium transition-all shadow-lg shadow-cyan-900/20 hover:shadow-cyan-500/20"
+                                      className="bg-cyan-600 hover:bg-cyan-500 text-white px-8 py-3 rounded-lg font-medium transition-all shadow-lg shadow-cyan-900/20 hover:shadow-cyan-500/20 cursor-pointer"
                                   >
                                       Start Transcription
                                   </button>

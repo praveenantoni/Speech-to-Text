@@ -18,6 +18,8 @@ export interface TranscriptionSettings {
   timestampMode: TimestampMode;
   timestampFormat: TimestampFormat;
   punctuation: Punctuation;
+  syncOffset?: number; // in milliseconds
+  scrollBehavior?: 'smooth' | 'auto';
 }
 
 export interface TranscriptionCue {
